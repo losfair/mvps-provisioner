@@ -24,10 +24,9 @@ It then starts an SEQPACKET listener on the Unix socket provided in env var
 - byte 5-8: image key length
 - byte 8+: image key
 
-After receiving the message, it should lookup the provided image key, either
-from a K8s ConfigMap whose name is provided in the environment variable
-`PROVISIONER_IMAGES_CM` if such an env var exists, or from the local file
-`./images.json` otherwise. The value is in the following format:
+After receiving the message, it should lookup the provided image key in the
+directory provided as env var `IMAGE_CONFIG_DIRECTORY`. The content of the file
+is in the following format:
 
 ```json
 {

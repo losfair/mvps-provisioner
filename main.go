@@ -53,10 +53,10 @@ func generateRandomHexString(length int) (string, error) {
 
 func loadImageConfig(imageKey string) (*ImageConfig, error) {
 	var configPath string
-	if cm := os.Getenv("PROVISIONER_IMAGES_CM"); cm != "" {
-		configPath = filepath.Join("/etc/config", cm, imageKey)
+	if cm := os.Getenv("IMAGE_CONFIG_DIRECTORY"); cm != "" {
+		configPath = filepath.Join(cm, imageKey)
 	} else {
-		configPath = "./images.json"
+		return nil, fmt.Errorf("IMAGE_CONFIG_DIRECTORY environment variable not set")
 	}
 
 	data, err := os.ReadFile(configPath)

@@ -37,8 +37,10 @@ services:
     privileged: true
     depends_on:
       - create-bucket
+      - minio
     volumes:
       - ./run:/var/run
+      - ./images:/images
     environment:
       - AWS_ACCESS_KEY_ID=minioadmin
       - AWS_SECRET_ACCESS_KEY=minioadmin
@@ -54,6 +56,7 @@ services:
       - MVPS_TE_CHECKPOINT_INTERVAL_JITTER_MS=2000
       - MVPS_TE_IMAGE_CACHE_BLOCK_SIZE_BYTES=65536
       - PROVISIONER_LISTEN_PATH=/var/run/mvps-provisioner.sock
+      - IMAGE_CONFIG_DIRECTORY=/images
     cap_add:
       - SYS_ADMIN
     devices:
@@ -61,12 +64,6 @@ services:
       - /dev/nbd1:/dev/nbd1
       - /dev/nbd2:/dev/nbd2
       - /dev/nbd3:/dev/nbd3
-    networks:
-      - mvps-network
-
-networks:
-  mvps-network:
-    driver: bridge
 
 volumes:
   minio-data:

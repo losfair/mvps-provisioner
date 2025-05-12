@@ -16,7 +16,7 @@ mvps-provisioner is responsible for starting and managing the `mvps-te` service 
 
 - `MVPS_TE_JWT_SECRET` - The secret used to sign JWTs (optional, will generate random if not provided)
 - `PROVISIONER_LISTEN_PATH` - Path to the Unix socket where the service listens for requests
-- `PROVISIONER_IMAGES_CM` - (Optional) Name of K8s ConfigMap containing image configurations
+- `IMAGE_CONFIG_DIRECTORY` - Path to the directory containing image configurations
 
 ## Building
 

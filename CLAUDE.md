@@ -62,7 +62,7 @@ MVPS Provisioner is a Go service that manages attachment and detachment of `mvps
 
 ### Image Configuration
 
-Images are configured either in a Kubernetes ConfigMap or in `./images.json` with the format:
+Images are configured as files in the directory provided as env var `IMAGE_CONFIG_DIRECTORY`:
 
 ```json
 {
