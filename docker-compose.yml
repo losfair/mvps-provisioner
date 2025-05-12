@@ -1,0 +1,72 @@
+version: '3'
+
+services:
+  minio:
+    image: minio/minio
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  create-bucket:
+    image: minio/mc
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      /usr/bin/mc config host add myminio http://minio:9000 minioadmin minioadmin;
+      /usr/bin/mc mb myminio/mvps-provisioner-test;
+      exit 0;
+      "
+
+  mvps-provisioner:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    privileged: true
+    depends_on:
+      - create-bucket
+    volumes:
+      - ./run:/var/run
+    environment:
+      - AWS_ACCESS_KEY_ID=minioadmin
+      - AWS_SECRET_ACCESS_KEY=minioadmin
+      - AWS_REGION=us-east-1
+      - S3_ENDPOINT=http://minio:9000
+      - MVPS_TE_IMAGE_STORE=s3
+      - MVPS_TE_IMAGE_STORE_S3_BUCKET=mvps-provisioner-test
+      - MVPS_TE_IMAGE_STORE_S3_PREFIX=test/
+      - MVPS_S3_GC_BUCKET=mvps-provisioner-test
+      - MVPS_S3_GC_PREFIX=test/
+      - MVPS_TE_BUFFER_STORE_PATH=/tmp
+      - MVPS_TE_CHECKPOINT_INTERVAL_MS=10000
+      - MVPS_TE_CHECKPOINT_INTERVAL_JITTER_MS=2000
+      - MVPS_TE_IMAGE_CACHE_BLOCK_SIZE_BYTES=65536
+      - PROVISIONER_LISTEN_PATH=/var/run/mvps-provisioner.sock
+    cap_add:
+      - SYS_ADMIN
+    devices:
+      - /dev/nbd0:/dev/nbd0
+      - /dev/nbd1:/dev/nbd1
+      - /dev/nbd2:/dev/nbd2
+      - /dev/nbd3:/dev/nbd3
+    networks:
+      - mvps-network
+
+networks:
+  mvps-network:
+    driver: bridge
+
+volumes:
+  minio-data:
