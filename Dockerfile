@@ -24,7 +24,7 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /build
 
 # Set MVPS version and cosign version
-ENV MVPS_VERSION=v0.1.3
+ENV MVPS_VERSION=v0.1.4
 ENV COSIGN_VERSION=v2.2.3
 
 # Download and install cosign
