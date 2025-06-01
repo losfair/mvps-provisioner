@@ -12,6 +12,7 @@ COPY . .
 
 # Build the provisioner
 RUN CGO_ENABLED=0 go build -o mvps-provisioner
+RUN CGO_ENABLED=0 go build -o mvps-sidecar ./cmd/mvps_sidecar.go
 
 # MVPS-TE download and verification stage
 FROM debian:bookworm-slim AS mvps-builder
@@ -60,6 +61,7 @@ WORKDIR /app
 
 # Copy the provisioner binary
 COPY --from=builder /build/mvps-provisioner /app/mvps-provisioner
+COPY --from=builder /build/mvps-sidecar /app/mvps-sidecar
 
 # Copy mvps-te and mvps-s3-gc binary
 COPY --from=mvps-builder /build/mvps-te /usr/bin/mvps-te

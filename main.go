@@ -480,6 +480,24 @@ func main() {
 		}
 	}()
 
+	sidecarPath := os.Getenv("MVPS_SIDECAR_SAVE_PATH")
+	if sidecarPath != "" {
+		// copy /app/mvps-sidecar to the specified path atomically
+		srcPath := "/app/mvps-sidecar"
+		destTmpPath := sidecarPath + ".tmp-" + uuid.NewString()
+		image, err := os.ReadFile(srcPath)
+		if err != nil {
+			log.Fatalf("Failed to read mvps-sidecar: %v", err)
+		}
+		if err := os.WriteFile(destTmpPath, image, 0755); err != nil {
+			log.Fatalf("Failed to write mvps-sidecar to %s: %v", destTmpPath, err)
+		}
+		if err := os.Rename(destTmpPath, sidecarPath); err != nil {
+			log.Fatalf("Failed to rename mvps-sidecar to %s: %v", sidecarPath, err)
+		}
+		log.Printf("Saved mvps-sidecar to %s", sidecarPath)
+	}
+
 	// Get socket path from env
 	socketPath := os.Getenv("PROVISIONER_LISTEN_PATH")
 	if socketPath == "" {
