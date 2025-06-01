@@ -376,6 +376,30 @@ func handleConnection(conn *net.UnixConn, jwtSecret string) {
 		return
 	}
 
+	fsfd, err := unix.Fsopen("ext4", unix.FSOPEN_CLOEXEC)
+	if err != nil {
+		log.Printf("Failed to open filesystem type ext4: %v", err)
+		return
+	}
+	defer unix.Close(fsfd)
+
+	if err := unix.FsconfigSetString(fsfd, "source", nbdDevice); err != nil {
+		log.Printf("Failed to set source path for ext4: %v", err)
+		return
+	}
+
+	if err := unix.FsconfigCreate(fsfd); err != nil {
+		log.Printf("Failed to create fsconfig for ext4: %v", err)
+		return
+	}
+
+	mountfd, err := unix.Fsmount(fsfd, 0, 0)
+	if err != nil {
+		log.Printf("Failed to mount ext4 filesystem: %v", err)
+		return
+	}
+	defer unix.Close(mountfd)
+
 	// This thread is going to enter client-provided mount namespace. It's dirty forever.
 	runtime.LockOSThread()
 
@@ -402,9 +426,8 @@ func handleConnection(conn *net.UnixConn, jwtSecret string) {
 	// We assume the client won't be able to override our `/proc` mount though
 	failed := false
 
-	// Mount it on dirfd
-	if err := unix.Mount(nbdDevice, fmt.Sprintf("/proc/self/fd/%d", dirFd), "ext4", 0, ""); err != nil {
-		log.Printf("Failed to mount NBD device %s to dirfd %d: %v", nbdDevice, dirFd, err)
+	if err := unix.MoveMount(mountfd, "", dirFd, "", unix.MOVE_MOUNT_F_EMPTY_PATH|unix.MOVE_MOUNT_T_EMPTY_PATH); err != nil {
+		log.Printf("Failed to move mount ext4 to dirfd %d: %v", dirFd, err)
 		failed = true
 	}
 
