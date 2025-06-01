@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -19,6 +20,8 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
+	"golang.org/x/sys/unix"
 )
 
 const (
@@ -244,7 +247,7 @@ func handleConnection(conn *net.UnixConn, jwtSecret string) {
 
 	buf := make([]byte, 4096)
 	oobBuf := make([]byte, 4096)
-	n, _, _, _, err := conn.ReadMsgUnix(buf, oobBuf)
+	n, oobn, _, _, err := conn.ReadMsgUnix(buf, oobBuf)
 	if err != nil {
 		log.Printf("Error reading from socket: %v", err)
 		return
@@ -254,6 +257,43 @@ func handleConnection(conn *net.UnixConn, jwtSecret string) {
 		log.Printf("Received message too short")
 		return
 	}
+
+	// Parse socket control messages to get file descriptors
+	if oobn == 0 {
+		log.Printf("No file descriptors received")
+		return
+	}
+
+	scms, err := syscall.ParseSocketControlMessage(oobBuf[:oobn])
+	if err != nil {
+		log.Printf("Failed to parse socket control message: %v", err)
+		return
+	}
+
+	if len(scms) == 0 {
+		log.Printf("No socket control messages received")
+		return
+	}
+
+	fds, err := syscall.ParseUnixRights(&scms[0])
+	if err != nil {
+		log.Printf("Failed to parse Unix rights: %v", err)
+		return
+	}
+	defer func() {
+		for _, fd := range fds {
+			unix.Close(fd)
+		}
+	}()
+
+	if len(fds) < 2 {
+		log.Printf("Expected 2 file descriptors (mount namespace fd and dirfd), got %d", len(fds))
+		return
+	}
+
+	mountNsFd := fds[0]
+	dirFd := fds[1]
+	log.Printf("Received mount namespace fd: %d, dirfd: %d", mountNsFd, dirFd)
 
 	// Parse message
 	// Check magic
@@ -305,31 +345,88 @@ func handleConnection(conn *net.UnixConn, jwtSecret string) {
 
 	// Register the device in the active devices map
 	registerDevice(nbdDevice, detachTracker)
+	defer detachNbdDevice(nbdDevice, detachTracker)
 
-	// Open NBD device
-	nbdFile, err := openNbdDevice(nbdDevice)
-	if err != nil {
-		log.Printf("Failed to open NBD device: %v", err)
-		detachNbdDevice(nbdDevice, detachTracker)
+	// Create a temporary mount point to test and format the device if needed
+	testMountpoint := fmt.Sprintf("/tmp/testmount-%s", uuid.NewString())
+	if err := os.MkdirAll(testMountpoint, 0755); err != nil {
+		panic(fmt.Sprintf("Failed to create mount point directory: %v", err))
+	}
+	defer os.Remove(testMountpoint)
+
+	// Attempt to mount the NBD device to test if it needs formatting
+	if err := unix.Mount(nbdDevice, testMountpoint, "ext4", unix.MS_RDONLY, ""); err != nil {
+		log.Printf("Failed to mount NBD device %s to %s: %v", nbdDevice, testMountpoint, err)
+		// If mount fails, try to format the device and mount again
+		log.Printf("Attempting to format NBD device %s with mkfs.ext4", nbdDevice)
+		formatCmd := exec.Command("mkfs.ext4", nbdDevice)
+		if err := formatCmd.Run(); err != nil {
+			log.Printf("Failed to format NBD device %s: %v", nbdDevice, err)
+			return
+		}
+		log.Printf("Successfully formatted NBD device %s", nbdDevice)
+		// Try mounting again after formatting
+		if err := unix.Mount(nbdDevice, testMountpoint, "ext4", unix.MS_RDONLY, ""); err != nil {
+			log.Printf("Failed to mount NBD device %s to %s after formatting: %v", nbdDevice, testMountpoint, err)
+			return
+		}
+	}
+	if err := unix.Unmount(testMountpoint, 0); err != nil {
+		log.Printf("Failed to unmount NBD device %s from test mount point %s: %v", nbdDevice, testMountpoint, err)
 		return
 	}
-	defer nbdFile.Close()
-	log.Printf("Opened NBD device file descriptor: %d", nbdFile.Fd())
 
-	// Send file descriptor back on the duplicated connection
-	rights := syscall.UnixRights(int(nbdFile.Fd()))
-	_, _, err = conn.WriteMsgUnix([]byte("OK"), rights, nil)
+	// This thread is going to enter client-provided mount namespace. It's dirty forever.
+	runtime.LockOSThread()
+
+	if err := unix.Unshare(unix.CLONE_FS); err != nil {
+		panic(fmt.Sprintf("Failed to unshare filesystem namespace: %v", err))
+	}
+
+	oldNs, err := os.Open("/proc/self/ns/mnt")
 	if err != nil {
-		log.Printf("Failed to send NBD device file descriptor: %v", err)
-		detachNbdDevice(nbdDevice, detachTracker)
+		panic(fmt.Sprintf("Failed to open current mount namespace: %v", err))
+	}
+	defer oldNs.Close()
+
+	// Enter the provided mount namespace and mount the NBD device to the provided dirfd
+	err = unix.Setns(mountNsFd, unix.CLONE_NEWNS)
+	if err != nil {
+		log.Printf("Failed to enter mount namespace: %v", err)
 		return
 	}
 
-	log.Printf("Successfully sent NBD device file descriptor for %s", nbdDevice)
+	// We are now executing in a highly dangerous user-provided mount namespace. Finish
+	// the work and leave as soon as possible.
+	//
+	// We assume the client won't be able to override our `/proc` mount though
+	failed := false
 
-	// Detach the device when the connection is closed
+	// Mount it on dirfd
+	if err := unix.Mount(nbdDevice, fmt.Sprintf("/proc/self/fd/%d", dirFd), "ext4", 0, ""); err != nil {
+		log.Printf("Failed to mount NBD device %s to dirfd %d: %v", nbdDevice, dirFd, err)
+		failed = true
+	}
+
+	if err := unix.Setns(int(oldNs.Fd()), unix.CLONE_NEWNS); err != nil {
+		panic(fmt.Sprintf("Failed to restore original mount namespace: %v", err))
+	}
+
+	if failed {
+		return
+	}
+
+	log.Printf("Successfully mounted NBD device %s to dirfd %d", nbdDevice, dirFd)
+
+	// Send success response
+	_, err = conn.Write([]byte("OK"))
+	if err != nil {
+		log.Printf("Failed to send success response: %v", err)
+		return
+	}
+
+	// Wait for client to finish and then detach
 	_, _, _, _, _ = conn.ReadMsgUnix(buf, oobBuf)
-	detachNbdDevice(nbdDevice, detachTracker)
 	log.Printf("Connection closed, detaching NBD device %s", nbdDevice)
 }
 
@@ -425,6 +522,17 @@ outer:
 		go handleConnection(conn, jwtSecret)
 	}
 
+	log.Println("Shutting down gracefully...")
 	detachAllDevices()
+
+	// Send SIGTERM to mvps-te process and wait for it to exit
+	log.Println("Sending SIGTERM to mvps-te process")
+	if err := mvpsCmd.Process.Signal(syscall.SIGTERM); err != nil {
+		log.Printf("Failed to send SIGTERM to mvps-te: %v", err)
+	} else {
+		log.Println("Waiting for mvps-te process to exit...")
+		mvpsCmd.Wait()
+	}
+
 	os.Remove(socketPath)
 }
